@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+
+# 原始下载数据（可通过脚本重新获取）
+data/raw/
+
+# 中间/大文件
+*.zip
+*.tar.gz
+data/splits_final
+data/sabdab_data

@@ -53,13 +53,64 @@ st.markdown(
             font-family: 'Inter', sans-serif;
         }
 
-        .main {
-            background: radial-gradient(circle at 10% 20%, rgb(15, 23, 42) 0%, rgb(2, 6, 23) 90%);
+        /* Force entire app dark */
+        .stApp {
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #334155 100%);
+            color: #f8fafc !important;
         }
 
-        h1, h2, h3, h4 {
+        .main .block-container {
+            background: transparent;
+            color: #f8fafc !important;
+        }
+
+        /* Headings */
+        h1, h2, h3, h4, h5, h6 {
             color: #f8fafc !important;
             font-weight: 700;
+        }
+
+        /* All text elements */
+        p, li, span, label, div, .stMarkdown, .stText {
+            color: #f8fafc !important;
+        }
+
+        /* Streamlit native widgets */
+        .stSelectbox label, .stMultiSelect label, .stTextInput label,
+        .stNumberInput label, .stSlider label, .stRadio label, .stCheckbox label {
+            color: #f8fafc !important;
+            font-weight: 500 !important;
+        }
+
+        /* Dataframes and tables */
+        .stDataFrame, .dataframe {
+            color: #f8fafc !important;
+        }
+        .stDataFrame th, .dataframe th {
+            background-color: #1e293b !important;
+            color: #f8fafc !important;
+        }
+        .stDataFrame td, .dataframe td {
+            background-color: #334155 !important;
+            color: #f8fafc !important;
+        }
+
+        /* Expander */
+        .streamlit-expanderHeader {
+            color: #f8fafc !important;
+            background-color: rgba(51, 65, 85, 0.6) !important;
+            border-radius: 10px;
+        }
+        .streamlit-expanderContent {
+            color: #f8fafc !important;
+        }
+
+        /* Warning/info boxes */
+        .stAlert {
+            color: #f8fafc !important;
+        }
+        .stAlert p {
+            color: #f8fafc !important;
         }
 
         .block-container {
@@ -69,15 +120,15 @@ st.markdown(
 
         /* Metric cards */
         div[data-testid="stMetric"] {
-            background: rgba(30, 41, 59, 0.6);
-            border: 1px solid rgba(148, 163, 184, 0.15);
+            background: rgba(51, 65, 85, 0.7);
+            border: 1px solid rgba(148, 163, 184, 0.25);
             border-radius: 16px;
             padding: 1rem;
             backdrop-filter: blur(8px);
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.15);
         }
         div[data-testid="stMetric"] label {
-            color: #94a3b8 !important;
+            color: #e2e8f0 !important;
             font-size: 0.85rem !important;
             text-transform: uppercase;
             letter-spacing: 0.05em;
@@ -93,8 +144,8 @@ st.markdown(
 
         /* Glass cards for markdown */
         .glass-card {
-            background: rgba(30, 41, 59, 0.55);
-            border: 1px solid rgba(148, 163, 184, 0.12);
+            background: rgba(51, 65, 85, 0.65);
+            border: 1px solid rgba(148, 163, 184, 0.22);
             border-radius: 18px;
             padding: 1.5rem;
             margin-bottom: 1.25rem;
@@ -109,12 +160,12 @@ st.markdown(
         }
 
         .pipeline-step {
-            background: rgba(15, 23, 42, 0.8);
-            border: 1px solid rgba(56, 189, 248, 0.25);
+            background: rgba(71, 85, 105, 0.7);
+            border: 1px solid rgba(56, 189, 248, 0.35);
             border-radius: 12px;
             padding: 1rem;
             text-align: center;
-            color: #e2e8f0;
+            color: #f8fafc;
             font-size: 0.9rem;
             height: 100%;
         }
@@ -129,15 +180,24 @@ st.markdown(
         }
 
         .footer {
-            color: #64748b;
+            color: #cbd5e1 !important;
             font-size: 0.8rem;
             text-align: center;
             margin-top: 3rem;
         }
+        .footer a {
+            color: #38bdf8 !important;
+        }
 
         /* Sidebar */
         section[data-testid="stSidebar"] {
-            background-color: rgba(15, 23, 42, 0.95);
+            background-color: rgba(15, 23, 42, 0.98);
+            border-right: 1px solid rgba(148, 163, 184, 0.12);
+        }
+        section[data-testid="stSidebar"] p,
+        section[data-testid="stSidebar"] span,
+        section[data-testid="stSidebar"] label {
+            color: #e2e8f0 !important;
         }
         section[data-testid="stSidebar"] .block-container {
             padding-top: 2rem;
@@ -148,10 +208,10 @@ st.markdown(
             gap: 8px;
         }
         .stTabs [data-baseweb="tab"] {
-            background: rgba(30, 41, 59, 0.5);
+            background: rgba(51, 65, 85, 0.6);
             border-radius: 10px 10px 0 0;
             padding: 10px 20px;
-            color: #cbd5e1;
+            color: #f1f5f9;
         }
         .stTabs [aria-selected="true"] {
             background: rgba(56, 189, 248, 0.15) !important;

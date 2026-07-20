@@ -5,9 +5,11 @@ sequence and 3D structure. Binding affinity is the central quantity optimized du
 **antibody affinity maturation** — the lead-optimization step of antibody drug discovery —
 so a model that ranks binders reliably can reduce costly wet-lab iterations.
 
-> **Headline result:** Spearman **0.41** on a *leakage-free antigen-cluster split*
+> **Headline result:** Spearman **0.39–0.41** on a *leakage-free antigen-cluster split*
 > (held-out antigens the model never saw during training), up from ≈0 for the initial
-> pipeline. The emphasis of this project is a **rigorous, honestly-evaluated** pipeline
+> pipeline. Paired bootstrap testing shows the embedding variants are **statistically
+> indistinguishable** on a 150-sample test set — a finding this project reports rather
+> than papers over. The emphasis here is a **rigorous, honestly-evaluated** pipeline
 > rather than an inflated benchmark number.
 
 **Stack:** Python · PyTorch · ESM-2 (650M) · XGBoost · scikit-learn · BioPython · pandas/NumPy
@@ -65,25 +67,34 @@ chain sizes, and VH–VL geometry, extracted from PDB/CIF with BioPython.
 ## Results
 
 Honest evaluation on the **antigen-cluster test split**, after de-duplication
-(758 unique complexes → 608 train / 150 test), XGBoost + PCA(50):
+(758 unique complexes → 608 train / 150 test), XGBoost + PCA(50). 95% CIs from
+8,000 bootstrap resamples; Δ is the paired difference vs. whole-chain pooling.
 
-| Feature set | Spearman | Pearson | R² |
+| Feature set | Spearman | 95% CI | Δ vs. baseline |
 | --- | :---: | :---: | :---: |
-| Structural features only | 0.189 | 0.173 | −0.04 |
-| Interface-residue pooling (paratope + epitope) | 0.251 | 0.243 | 0.01 |
-| Whole-chain mean pooling (VH + VL + antigen) | 0.393 | 0.385 | 0.15 |
-| Mean pooling + structural features | 0.375 | 0.371 | 0.13 |
-| **Mean pooling + interface pooling (fused)** | **0.413** | **0.405** | **0.16** |
+| Structural features only | 0.167 | [0.02, 0.31] | −0.224 **(sig.)** |
+| Interface pooling, H/L separate | 0.195 | [0.05, 0.34] | −0.198 **(sig.)** |
+| Interface pooling (paratope + epitope) | 0.251 | [0.10, 0.39] | −0.141 (n.s.) |
+| Interface pooling, junction-free | 0.293 | [0.14, 0.44] | −0.098 (n.s.) |
+| Mean pooling + structural features | 0.375 | [0.23, 0.51] | −0.018 (n.s.) |
+| **Whole-chain mean pooling (VH+VL+antigen)** | **0.393** | [0.25, 0.53] | *baseline* |
+| Mean pooling + interface pooling (fused) | 0.413 | [0.27, 0.54] | +0.020 (n.s.) |
 
 **Findings**
 
 - The largest gain came from **fixing evaluation and data hygiene** (a prediction-alignment
   bug, sequence-based de-duplication, and stronger regularization), which moved the honest
   held-out correlation from ≈0 to ~0.39.
-- Interface pooling *alone* underperforms whole-chain pooling (only ~12–16 residues → noisier
-  signal), but **fused** with the whole-chain representation it adds orthogonal signal
-  (0.39 → 0.41). An honest negative-then-positive result.
-- Hand-crafted structural features add little on top of language-model embeddings.
+- **Only 2 of 8 pairwise comparisons are statistically significant**, and both are
+  *negative*: structural features alone, and splitting H/L into separate vectors. With 150
+  test samples the resolution limit on Spearman is ≈±0.17, so the apparent +0.020 from
+  fusion is **noise, not signal** — the grouped-CV estimate (n=608, 4× the samples) actually
+  ranks plain whole-chain pooling highest.
+- A tested-and-refuted hypothesis: concatenating heavy and light chains into a single ESM
+  input creates an artificial junction. Removing it (holding dimensionality constant) gave
+  Δ = +0.040, CI [−0.088, +0.169] — **not significant**.
+- Hand-crafted structural features add nothing on top of language-model embeddings, which is
+  consistent with protein language models implicitly encoding structural contacts.
 
 ---
 
@@ -94,23 +105,32 @@ AIDD/
 ├── data/          # SAbDab download + CIF structures (splits_final/)
 ├── parser/        # VH/VL chain & sequence extraction from PDB
 ├── scripts/
-│   ├── 01b_build_sabdab2_dataset.py   # curate labeled complexes (pKD, splits)
+│   ├── 01_build_dataset.py                # SKEMPI v2 branch (mutation ΔΔG pairs)
+│   ├── 01b_build_sabdab2_dataset.py       # curate labeled complexes (pKD, splits)
 │   ├── 02_extract_structural_features.py  # BioPython interface/geometry features
 │   ├── 04_extract_esm2_embeddings.py      # ESM-2 whole-chain mean embeddings
 │   ├── 05_train_esm_xgb.py                # trainer: fusion, PCA, GroupKFold CV
-│   └── 06_extract_interface_embeddings.py # ESM-2 paratope/epitope pooling
+│   ├── 06_extract_interface_embeddings.py # ESM-2 paratope/epitope pooling
+│   ├── 07_run_ablations.py                # one-command ablation suite → table
+│   └── 08_significance_test.py            # bootstrap CIs + paired significance
 ├── processed/     # feature tables & embeddings (.npz)
 └── docs/plan.md   # step-by-step build log
 ```
 
 ---
 
-## Reproduce the headline result
+## Reproduce
 
 ```bash
 conda activate aidd
 
-# Best configuration: whole-chain + interface embeddings fused (Test Spearman 0.41)
+# Full ablation suite → reports/ablation_table.md
+python AIDD/scripts/07_run_ablations.py
+
+# Bootstrap CIs + paired significance → reports/significance_table.md
+python AIDD/scripts/08_significance_test.py --ref mean_pooled
+
+# Single best-observed configuration
 python AIDD/scripts/05_train_esm_xgb.py \
   --emb-npz AIDD/processed/esm2_650m_embeddings.npz \
             AIDD/processed/esm2_interface_embeddings.npz \
@@ -130,6 +150,9 @@ Upstream artifacts (labels, structural features, embeddings) are produced by scr
 - **Data hygiene:** de-duplication of near-identical complex copies before splitting.
 - **Ranking-first metrics:** Spearman/Pearson reported alongside R², because absolute
   affinity calibration across antigens is not realistic — ranking is the useful signal.
+- **Uncertainty quantification:** paired bootstrap testing on every ablation, which revealed
+  that most of the apparent differences — including one this project initially claimed as a
+  gain — are within sampling noise.
 - **Debugging:** identified and fixed a prediction-alignment bug that had masked the model's
   true behavior.
 
@@ -137,6 +160,9 @@ Upstream artifacts (labels, structural features, embeddings) are produced by scr
 
 - The ceiling for cross-antigen *absolute* pKD on this data is ~Spearman 0.4; labels mix
   assay types and confidence levels, which caps achievable accuracy.
+- **The test set is too small to compare representations.** At n=150 the resolution limit is
+  ≈±0.17 Spearman. Distinguishing embedding strategies would need either a much larger
+  labeled set or a paired within-complex task.
 - A more tractable and directly useful reframing is **ΔΔG mutation ranking** — predicting
   which point mutations improve binding within a single antibody lineage (the actual
   affinity-maturation task), which pairs naturally with the planned genetic-algorithm

@@ -108,11 +108,36 @@ def pooled_interface_emb(model, bc, device, layer, residues, mask):
     return rep[m].mean(axis=0)
 
 
+def interface_sum_count(model, bc, device, layer, residues, mask):
+    """
+    返回 (界面残基表示之和, 界面残基数, 整链均值)。
+    拆成 sum/count 是为了能跨链正确合并——直接平均两条链的均值会
+    给残基少的链过高权重。
+    """
+    if len(residues) == 0:
+        return None, 0, None
+    seq = "".join(aa for aa, _ in residues)
+    rep = per_residue_repr(model, bc, seq, device, layer)
+    m = mask[:rep.shape[0]]
+    whole = rep.mean(axis=0)
+    if m.sum() == 0:
+        return None, 0, whole
+    return rep[m].sum(axis=0), int(m.sum()), whole
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default="esm2_t33_650M_UR50D")
     parser.add_argument("--limit", type=int, default=0, help="只处理前 N 条（调试）")
+    parser.add_argument("--split-hl", action="store_true",
+                        help="H/L 链分别过 ESM（消除人为接缝）。额外输出 "
+                             "paratope_h/l_embeddings，并把合并后的 paratope "
+                             "按界面残基数加权，维度与默认模式一致")
+    parser.add_argument("--out", type=str, default=None,
+                        help="输出 npz 路径，默认 processed/esm2_interface_embeddings.npz")
     args = parser.parse_args()
+
+    out_npz = Path(args.out) if args.out else OUTPUT_NPZ
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
@@ -128,6 +153,7 @@ def main():
     print(f"{len(df)} instances")
 
     instances, para, epi, npara, nepi, status = [], [], [], [], [], []
+    para_h, para_l = [], []
     D = model.embed_dim
     zero = np.zeros(D, dtype=np.float32)
 
@@ -139,39 +165,89 @@ def main():
         instances.append(inst)
         if not cif.exists():
             para.append(zero); epi.append(zero); npara.append(0); nepi.append(0)
+            para_h.append(zero); para_l.append(zero)
             status.append("missing_cif"); continue
         try:
             st = PARSER.get_structure(inst, str(cif))
-            ab_ids = parse_chain_set(row["h_chain"]) + parse_chain_set(row["l_chain"])
+            h_ids = parse_chain_set(row["h_chain"])
+            l_ids = parse_chain_set(row["l_chain"])
             ag_ids = parse_chain_set(row["antigen_chains"])
-            ab_res = chain_residues(st, ab_ids)
             ag_res = chain_residues(st, ag_ids)
-            ab_ca = [c for _, c in ab_res]
             ag_ca = [c for _, c in ag_res]
-            ab_mask = interface_mask(ab_ca, ag_ca)
-            ag_mask = interface_mask(ag_ca, ab_ca)
-            p = pooled_interface_emb(model, bc, device, layer, ab_res, ab_mask)
+
+            if args.split_hl:
+                # --- H / L 各自独立过 ESM，不制造人为接缝 ---
+                h_res = chain_residues(st, h_ids)
+                l_res = chain_residues(st, l_ids)
+                h_mask = interface_mask([c for _, c in h_res], ag_ca)
+                l_mask = interface_mask([c for _, c in l_res], ag_ca)
+                # 抗原侧的 partner 是 H+L 的全部坐标
+                ab_ca_all = [c for _, c in h_res] + [c for _, c in l_res]
+                ag_mask = interface_mask(ag_ca, ab_ca_all)
+
+                h_sum, h_n, h_whole = interface_sum_count(
+                    model, bc, device, layer, h_res, h_mask)
+                l_sum, l_n, l_whole = interface_sum_count(
+                    model, bc, device, layer, l_res, l_mask)
+
+                # 合并 paratope：按界面残基数加权（等价于对两条链所有界面
+                # 残基取一次平均），维度仍是 D，可与默认模式直接对比
+                if h_n + l_n > 0:
+                    tot = np.zeros(D, dtype=np.float64)
+                    if h_n:
+                        tot += h_sum
+                    if l_n:
+                        tot += l_sum
+                    p = (tot / (h_n + l_n)).astype(np.float32)
+                else:
+                    wholes = [w for w in (h_whole, l_whole) if w is not None]
+                    p = np.mean(wholes, axis=0).astype(np.float32) if wholes else zero
+
+                ph = (h_sum / h_n).astype(np.float32) if h_n else (
+                    h_whole.astype(np.float32) if h_whole is not None else zero)
+                pl = (l_sum / l_n).astype(np.float32) if l_n else (
+                    l_whole.astype(np.float32) if l_whole is not None else zero)
+                n_para = h_n + l_n
+            else:
+                # --- 默认：H+L 串成一条序列（原始实现）---
+                ab_res = chain_residues(st, h_ids + l_ids)
+                ab_ca = [c for _, c in ab_res]
+                ab_mask = interface_mask(ab_ca, ag_ca)
+                ag_mask = interface_mask(ag_ca, ab_ca)
+                p = pooled_interface_emb(model, bc, device, layer, ab_res, ab_mask)
+                p = p if p is not None else zero
+                ph = pl = zero
+                n_para = int(ab_mask.sum())
+
             e = pooled_interface_emb(model, bc, device, layer, ag_res, ag_mask)
-            para.append(p if p is not None else zero)
+            para.append(p)
+            para_h.append(ph); para_l.append(pl)
             epi.append(e if e is not None else zero)
-            npara.append(int(ab_mask.sum())); nepi.append(int(ag_mask.sum()))
+            npara.append(n_para); nepi.append(int(ag_mask.sum()))
             status.append("ok")
         except Exception as ex:
             para.append(zero); epi.append(zero); npara.append(0); nepi.append(0)
+            para_h.append(zero); para_l.append(zero)
             status.append(f"error: {type(ex).__name__}")
 
-    OUTPUT_NPZ.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        OUTPUT_NPZ,
+    out_npz.parent.mkdir(parents=True, exist_ok=True)
+    arrays = dict(
         instances=np.array(instances, dtype=str),
         paratope_embeddings=np.vstack(para).astype(np.float32),
         epitope_embeddings=np.vstack(epi).astype(np.float32),
         n_paratope=np.array(npara), n_epitope=np.array(nepi),
         status=np.array(status, dtype=str),
     )
+    if args.split_hl:
+        arrays["paratope_h_embeddings"] = np.vstack(para_h).astype(np.float32)
+        arrays["paratope_l_embeddings"] = np.vstack(para_l).astype(np.float32)
+    np.savez(out_npz, **arrays)
+
     ok = sum(s == "ok" for s in status)
-    print(f"\nSaved {OUTPUT_NPZ}  ok={ok}/{len(status)}  dim={D}")
+    mode = "split-HL" if args.split_hl else "concatenated-HL"
+    print(f"\nSaved {out_npz}  mode={mode}  ok={ok}/{len(status)}  dim={D}")
     print(f"paratope residues: mean={np.mean(npara):.1f}  epitope: mean={np.mean(nepi):.1f}")
+    print(f"arrays: {sorted(arrays)}")
 
 
 if __name__ == "__main__":

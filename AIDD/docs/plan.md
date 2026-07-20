@@ -65,28 +65,37 @@ test R²≈0（严重过拟合、无法泛化）。
 - **抗原分组交叉验证**（GroupKFold，group=抗原序列），给出诚实泛化估计
 - 更强正则（max_depth=3, reg_lambda=2）+ PCA 降维
 
-诚实结果（抗原聚类 test split，去重后，XGBoost + PCA50）：
+诚实结果（抗原聚类 test split，去重后 608 train / 150 test，XGBoost + PCA50）。
+95% CI 来自 8000 次 bootstrap；Δ 为相对「整链池化」的配对差值：
 
-| 特征 | Test Spearman | Test R² |
-|---|---|---|
-| mean-pooled ESM（VH+VL+抗原） | 0.393 | 0.145 |
-| mean-pooled + 结构特征 | 0.375 | 0.130 |
-| 界面残基池化（paratope+epitope，见 `06`） | 0.251 | 0.014 |
-| **mean-pooled + 界面池化 拼接** | **0.413** | **0.164** |
-| 仅结构特征 | 0.189 | -0.037 |
+| 特征 | Test Spearman | 95% CI | Δ vs 基准 |
+|---|---|---|---|
+| 仅结构特征 | 0.167 | [0.02, 0.31] | −0.224 **显著** |
+| 界面池化（H/L 分开） | 0.195 | [0.05, 0.34] | −0.198 **显著** |
+| 界面池化（H/L 串接） | 0.251 | [0.10, 0.39] | −0.141 不显著 |
+| 界面池化（无接缝） | 0.293 | [0.14, 0.44] | −0.098 不显著 |
+| mean-pooled + 结构特征 | 0.375 | [0.23, 0.51] | −0.018 不显著 |
+| **mean-pooled ESM（基准）** | **0.393** | [0.25, 0.53] | — |
+| mean-pooled + 界面池化 融合 | 0.413 | [0.27, 0.54] | +0.020 不显著 |
 
-结论：
+结论（已按显著性检验修正）：
 - 关键收益来自「修 bug + 去重 + 正则」，把诚实 test 从 ≈0 提到 ≈0.39。
-- **界面残基池化单独用反而更差**（残基太少、更噪），但与整链 mean 拼接能带来
-  小幅正交增益（0.39→0.41）。这是个诚实的负结果，值得记录。
-- 结构特征在嵌入之上几乎无增量。
+- **8 组对比只有 2 组显著，且都是「更差」方向**（仅结构特征、H/L 拆分）。
+  Test 集 n=150，Spearman 分辨极限 ≈±0.17，因此融合的 +0.020 是噪声而非增益。
+  更可靠的 GroupCV（n=608）上，整链池化单独用反而排第一。
+  → **不能宣称「融合最优」**，各嵌入变体统计上无法区分。
+- 一个被证伪的假设：H/L 串成一条序列会产生人为接缝。去掉接缝（维度不变）
+  Δ=+0.040，CI [−0.088, +0.169]，不显著。
+- 结构特征在嵌入之上无增量，符合「PLM 已隐含结构接触信息」的认知。
 - 天花板就在 Spearman ~0.4 左右：跨抗原簇预测绝对 pKD 本就是领域内最难的设定，
   标签又混了不同实验方法与 `pdb_only` 噪声。若要更高，应换任务（ΔΔG 突变排序）
   或换抗体专用 PLM（AntiBERTy/IgBERT）。
 
 脚本：
-- `scripts/06_extract_interface_embeddings.py`：界面残基 ESM 池化（paratope/epitope）
+- `scripts/06_extract_interface_embeddings.py`：界面残基 ESM 池化，`--split-hl` 可分链
 - `scripts/05_train_esm_xgb.py --emb-npz ... --feature-keys ...`：通用训练/评估
+- `scripts/07_run_ablations.py`：一键跑全部消融 → `reports/ablation_table.md`
+- `scripts/08_significance_test.py`：bootstrap CI + 配对检验 → `reports/significance_table.md`
 
 ### Step 5b：优化层（遗传算法）
 - 对 CDR-H3 序列做 one-hot 编码

@@ -104,33 +104,22 @@ def main():
     parser.add_argument("--cv-folds", type=int, default=5)
     parser.add_argument("--tag", type=str, default=None,
                         help="输出文件名后缀，默认从 emb-npz 推断")
+    parser.add_argument("--no-embeddings", action="store_true",
+                        help="不使用任何 ESM 嵌入（配合 --add-struct-features 做纯结构特征消融）")
+    parser.add_argument("--metrics-json", type=str, default=None,
+                        help="把本次运行的指标写成 JSON，供消融汇总脚本读取")
     args = parser.parse_args()
 
-    tag = args.tag or "+".join(
-        Path(p).stem.replace("esm2_", "").replace("_embeddings", "") for p in args.emb_npz)
+    if args.no_embeddings and not args.add_struct_features:
+        parser.error("--no-embeddings 必须配合 --add-struct-features，否则没有任何特征")
+
+    if args.no_embeddings:
+        tag = args.tag or "structonly"
+    else:
+        tag = args.tag or "+".join(
+            Path(p).stem.replace("esm2_", "").replace("_embeddings", "") for p in args.emb_npz)
     pred_csv = PROJECT_ROOT / "processed" / f"pred_{tag}_{args.model}.csv"
     plot_path = PROJECT_ROOT / "reports" / f"perf_{tag}_{args.model}.png"
-
-    # --- 载入嵌入（可多个 npz，按 instance 对齐拼接）---
-    print(f"Loading embeddings from {args.emb_npz}  keys={args.feature_keys}")
-    npzs = [np.load(p, allow_pickle=True) for p in args.emb_npz]
-    insts = [z["instances"].astype(str) for z in npzs]
-    parts = []
-    for key in args.feature_keys:
-        for z, inst in zip(npzs, insts):
-            if key in z.files:
-                d = pd.DataFrame(z[key], index=inst)
-                d.columns = [f"{key}_{i}" for i in range(d.shape[1])]
-                d.index.name = "instance"
-                parts.append(d)
-                break
-        else:
-            raise KeyError(f"feature key '{key}' not found in any of {args.emb_npz}")
-    emb_df = parts[0]
-    for p in parts[1:]:
-        emb_df = emb_df.join(p, how="inner")
-    emb_cols = list(emb_df.columns)
-    print(f"  embedding matrix: {emb_df.shape}")
 
     # --- 载入标签 ---
     labels = pd.read_csv(LABELED_CSV, low_memory=False)
@@ -138,7 +127,32 @@ def main():
         labels = labels[labels["label_confidence"] == "chain_matched"].copy()
         print(f"Using only chain_matched labels: {len(labels)} rows")
 
-    df = labels.merge(emb_df, on="instance", how="inner").reset_index(drop=True)
+    # --- 载入嵌入（可多个 npz，按 instance 对齐拼接）---
+    if args.no_embeddings:
+        print("No embeddings (structural-features-only ablation)")
+        emb_cols = []
+        df = labels.reset_index(drop=True)
+    else:
+        print(f"Loading embeddings from {args.emb_npz}  keys={args.feature_keys}")
+        npzs = [np.load(p, allow_pickle=True) for p in args.emb_npz]
+        insts = [z["instances"].astype(str) for z in npzs]
+        parts = []
+        for key in args.feature_keys:
+            for z, inst in zip(npzs, insts):
+                if key in z.files:
+                    d = pd.DataFrame(z[key], index=inst)
+                    d.columns = [f"{key}_{i}" for i in range(d.shape[1])]
+                    d.index.name = "instance"
+                    parts.append(d)
+                    break
+            else:
+                raise KeyError(f"feature key '{key}' not found in any of {args.emb_npz}")
+        emb_df = parts[0]
+        for p in parts[1:]:
+            emb_df = emb_df.join(p, how="inner")
+        emb_cols = list(emb_df.columns)
+        print(f"  embedding matrix: {emb_df.shape}")
+        df = labels.merge(emb_df, on="instance", how="inner").reset_index(drop=True)
     print(f"Rows after merging embeddings: {len(df)}")
 
     # --- 去重：同一 (VH,VL,AG) 只保留一行 ---
@@ -164,6 +178,12 @@ def main():
     train_mask = (df["split"] == "train").values
     test_mask = (df["split"] == "test").values
 
+    # PCA 维数不能超过特征数（结构特征只有十几维）
+    n_pca = args.pca
+    if n_pca and n_pca >= X.shape[1]:
+        print(f"PCA disabled: n_components={n_pca} >= n_features={X.shape[1]}")
+        n_pca = 0
+
     # --- 抗原分组交叉验证（只在 train 内做，诚实估计泛化）---
     X_train, y_train = X[train_mask], y[train_mask]
     g_train = groups[train_mask]
@@ -171,7 +191,7 @@ def main():
     gkf = GroupKFold(n_splits=n_folds)
     cv_true, cv_pred = [], []
     for tr_idx, va_idx in gkf.split(X_train, y_train, g_train):
-        m = build_model(args.model, args.pca)
+        m = build_model(args.model, n_pca)
         m.fit(X_train[tr_idx], y_train[tr_idx])
         cv_pred.append(m.predict(X_train[va_idx]))
         cv_true.append(y_train[va_idx])
@@ -179,15 +199,31 @@ def main():
     cv_pred = np.concatenate(cv_pred)
 
     # --- 用全部 train 拟合最终模型，评估 held-out test ---
-    model = build_model(args.model, args.pca)
+    model = build_model(args.model, n_pca)
     model.fit(X_train, y_train)
     y_train_pred = model.predict(X_train)
     y_test_pred = model.predict(X[test_mask])
 
+    m_train = metrics(y_train, y_train_pred)
+    m_cv = metrics(cv_true, cv_pred)
+    m_test = metrics(y[test_mask], y_test_pred)
+
     print("\n=== Metrics (antigen-cluster test split) ===")
-    print(fmt("Train", metrics(y_train, y_train_pred), train_mask.sum()))
-    print(fmt("GroupCV", metrics(cv_true, cv_pred), len(cv_true)))
-    print(fmt("Test", metrics(y[test_mask], y_test_pred), test_mask.sum()))
+    print(fmt("Train", m_train, train_mask.sum()))
+    print(fmt("GroupCV", m_cv, len(cv_true)))
+    print(fmt("Test", m_test, test_mask.sum()))
+
+    if args.metrics_json:
+        import json
+        Path(args.metrics_json).parent.mkdir(parents=True, exist_ok=True)
+        with open(args.metrics_json, "w") as fh:
+            json.dump({
+                "tag": tag, "model": args.model, "pca": n_pca,
+                "n_features": int(X.shape[1]),
+                "n_train": int(train_mask.sum()), "n_test": int(test_mask.sum()),
+                "train": m_train, "groupcv": m_cv, "test": m_test,
+            }, fh, indent=2)
+        print(f"Metrics JSON saved to {args.metrics_json}")
 
     # --- 正确对齐地保存预测（按 df 原顺序回填）---
     pred_full = np.empty(len(df))
